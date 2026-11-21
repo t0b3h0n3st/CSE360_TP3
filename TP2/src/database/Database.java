@@ -6,6 +6,7 @@ import java.util.List;
 import java.util.UUID;
 
 import entityClasses.Category;
+import entityClasses.ExperienceStatistics;
 import entityClasses.LessonsLearned;
 import entityClasses.LessonsLearnedCollection;
 import entityClasses.LessonExperience;
@@ -655,6 +656,11 @@ public class Database {
 				+ "contributor VARCHAR(255) NOT NULL, what_done VARCHAR(10000) NOT NULL, "
 				+ "how_done VARCHAR(10000) NOT NULL, elapsed_minutes DECIMAL(12,2) NOT NULL, "
 				+ "member_effort VARCHAR(10000) NOT NULL)");
+		// Keep the published snapshot separate from attempts so toggling visibility cannot edit history.
+		statement.execute("CREATE TABLE IF NOT EXISTS experience_summaries ("
+				+ "lesson_id INT PRIMARY KEY REFERENCES lessons(id) ON DELETE CASCADE, "
+				+ "attempt_count INT NOT NULL, mean_elapsed DECIMAL(12,2) NOT NULL, "
+				+ "total_effort DECIMAL(30,2) NOT NULL, visible BOOLEAN NOT NULL DEFAULT FALSE)");
 		}
 
 /*******
@@ -1913,5 +1919,116 @@ public class Database {
 	/* --------------------------
 	 * [HUICHANG] end
 	   -------------------------- */
+
+	/**
+	 * Loads the attempts for a curator's selected lesson. Covered by StatisticsWorkflowTestbed.
+	 * @param curator signed-in curator
+	 * @param lessonId selected lesson identifier
+	 * @return saved attempts in creation order
+	 * @throws SQLException if the records cannot be loaded
+	 * @throws IllegalArgumentException if the account is not a curator
+	 */
+	public List<LessonExperience> getCuratorExperiences(String curator, int lessonId) throws SQLException {
+		requireStatisticsCurator(curator);
+		List<LessonExperience> attempts = new ArrayList<>();
+		try (PreparedStatement query = connection.prepareStatement(
+				"SELECT * FROM lesson_experiences WHERE lesson_id = ? ORDER BY id")) {
+			query.setInt(1, lessonId);
+			try (ResultSet rows = query.executeQuery()) {
+				while (rows.next()) attempts.add(new LessonExperience(rows.getLong("id"), lessonId,
+						rows.getString("contributor"), rows.getString("what_done"), rows.getString("how_done"),
+						rows.getBigDecimal("elapsed_minutes"), rows.getString("member_effort")));
+			}
+		}
+		return List.copyOf(attempts);
+	}
+
+	/**
+	 * Saves the statistics for selected attempts. Covered by StatisticsWorkflowTestbed.
+	 * @param curator signed-in curator
+	 * @param lessonId selected lesson identifier
+	 * @param attemptIds IDs of the selected saved attempts
+	 * @throws SQLException if the records cannot be read or the summary cannot be saved
+	 * @throws IllegalArgumentException if the selection or curator access is invalid
+	 */
+	public void saveExperienceSummary(String curator, int lessonId, List<Long> attemptIds) throws SQLException {
+		if (attemptIds == null || attemptIds.size() < 2)
+			throw new IllegalArgumentException("Select at least two saved attempts.");
+		List<LessonExperience> attempts = getCuratorExperiences(curator, lessonId).stream()
+				.filter(attempt -> attemptIds.contains(attempt.getId())).toList();
+		if (attempts.size() != attemptIds.size())
+			throw new IllegalArgumentException("Select distinct saved attempts from this lesson.");
+		ExperienceStatistics summary = ExperienceStatistics.summarize(attempts);
+		// A replacement needs a fresh visibility decision before contributors can see it.
+		try (PreparedStatement save = connection.prepareStatement(
+				"MERGE INTO experience_summaries (lesson_id, attempt_count, mean_elapsed, total_effort, visible) "
+				+ "KEY(lesson_id) VALUES (?, ?, ?, ?, FALSE)")) {
+			save.setInt(1, lessonId);
+			save.setInt(2, summary.getAttemptCount());
+			save.setBigDecimal(3, summary.getMeanElapsedMinutes());
+			save.setBigDecimal(4, summary.getTotalEffortMinutes());
+			save.executeUpdate();
+		}
+	}
+
+	/**
+	 * Changes a saved summary's visibility. Covered by StatisticsWorkflowTestbed.
+	 * @param curator signed-in curator
+	 * @param lessonId selected lesson identifier
+	 * @param visible whether the contributor may see the summary
+	 * @throws SQLException if the visibility change fails
+	 * @throws IllegalArgumentException if the account is not a curator or the summary is missing
+	 */
+	public void setExperienceSummaryVisible(String curator, int lessonId, boolean visible) throws SQLException {
+		requireStatisticsCurator(curator);
+		try (PreparedStatement update = connection.prepareStatement(
+				"UPDATE experience_summaries SET visible = ? WHERE lesson_id = ?")) {
+			update.setBoolean(1, visible);
+			update.setInt(2, lessonId);
+			if (update.executeUpdate() == 0)
+				throw new IllegalArgumentException("Save a summary first.");
+		}
+	}
+
+	/**
+	 * Reads a saved snapshot using the current role and ownership rules.
+	 * Covered by StatisticsWorkflowTestbed.
+	 * @param username signed-in account
+	 * @param lessonId selected lesson identifier
+	 * @param curatorView whether the caller is using the curator workflow
+	 * @return summary, or null if none is available to that role
+	 * @throws SQLException if the summary cannot be read
+	 * @throws IllegalArgumentException if the account cannot access the selected lesson in this role
+	 */
+	public ExperienceSummary getExperienceSummary(String username, int lessonId, boolean curatorView)
+			throws SQLException {
+		if (curatorView) requireStatisticsCurator(username);
+		else requireExperienceAccess(username, lessonId);
+		String sql = "SELECT * FROM experience_summaries WHERE lesson_id = ?";
+		if (!curatorView) sql += " AND visible = TRUE";
+		try (PreparedStatement query = connection.prepareStatement(sql)) {
+			query.setInt(1, lessonId);
+			try (ResultSet row = query.executeQuery()) {
+				if (!row.next()) return null;
+				return new ExperienceSummary(row.getInt("attempt_count"), row.getBigDecimal("mean_elapsed"),
+						row.getBigDecimal("total_effort"), row.getBoolean("visible"));
+			}
+		}
+	}
+
+	private void requireStatisticsCurator(String username) {
+		if (username == null || username.isBlank() || !isCurator(username))
+			throw new IllegalArgumentException("Curator access is required.");
+	}
+
+	/**
+	 * The stored values that the curator can share with a lesson's contributor.
+	 * @param attemptCount number of attempts in the calculation
+	 * @param meanElapsedMinutes average elapsed minutes
+	 * @param totalEffortMinutes total person-minutes
+	 * @param visible whether the contributor may read the summary
+	 */
+	public record ExperienceSummary(int attemptCount, java.math.BigDecimal meanElapsedMinutes,
+			java.math.BigDecimal totalEffortMinutes, boolean visible) { }
 
 }
