@@ -71,6 +71,7 @@ public class ViewViewLesson {
 	
 	/** Opens attempt history without changing the lesson title or description. */
 	protected static Button experienceButton = new Button("Experience Information");
+	private static final Button statisticsButton = new Button("Experience Statistics");
 	public static Button lockTitleButton = new Button("Lock Title");
 	public static Button lockDescriptionButton = new Button("Lock Description");
 	
@@ -115,6 +116,10 @@ public class ViewViewLesson {
 		lessonText.setText(lesson.getLessonText());
 		
 		String currentUser = theUser.getUserName();
+		int activeRole = applicationMain.FoundationsMain.activeHomePage;
+		boolean curatorView = activeRole == 3 && theDatabase.isCurator(currentUser);
+		statisticsButton.setVisible(curatorView || (activeRole == 2 && theDatabase.isContributor(currentUser)));
+		statisticsButton.setOnAction(event -> guiStatistics.ViewStatistics.show(ps, user, lesson, curatorView));
 
 		//TP2: This checks to see if the role is curator or not
 				if (theDatabase.isCurator(currentUser)) {
@@ -202,6 +207,7 @@ public class ViewViewLesson {
     	// bottom buttons: 
     	setupButtonUI(returnButton, "Dialog", 18, 200, Pos.CENTER, 20, 540);
 		setupButtonUI(experienceButton, "Dialog", 18, 250, Pos.CENTER, 20, 495);
+		setupButtonUI(statisticsButton, "Dialog", 18, 225, Pos.CENTER, 550, 100);
     	
        	// TEXT FIELD UI:
     	setupTextUI(titleText, "Arial", 16, 400, Pos.CENTER_LEFT, 280, 60, true);
@@ -245,7 +251,7 @@ public class ViewViewLesson {
     	// ADD ALL THE UI COMPONENTS TO THE SCENE:
 
     	theRootPane.getChildren().addAll(topLabel, titleLabel, lessonsLabel, titleText, lessonText, category, categoryLabel, curatorInfoLabel, 
-    			curatorInfoText, saveButton, returnButton, lockTitleButton, lockDescriptionButton, experienceButton);
+			curatorInfoText, saveButton, returnButton, lockTitleButton, lockDescriptionButton, experienceButton, statisticsButton);
 	}
 	
     // copy pasted again
